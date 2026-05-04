@@ -17,20 +17,25 @@ function attachPhotos(listings) {
 
 // Browse / search
 router.get("/", premiumGate("browse"), (req, res) => {
-  const { category, q, max_price, sort = "newest", limit = 50, offset = 0 } = req.query;
+  const { category, subcategory, q, max_price, sort = "newest", limit = 50, offset = 0 } = req.query;
   const where = ["l.status = 'active'"];
   const params = [];
   if (category && category !== "all") { where.push("l.category = ?"); params.push(category); }
+  if (subcategory)                    { where.push("l.subcategory = ?"); params.push(subcategory); }
   if (q) { where.push("(l.title LIKE ? OR l.description LIKE ?)"); params.push(`%${q}%`, `%${q}%`); }
   if (max_price !== undefined) { where.push("l.price <= ?"); params.push(parseInt(max_price, 10)); }
   let order = "l.created_at DESC";
   if (sort === "price-asc") order = "l.price ASC";
   else if (sort === "price-desc") order = "l.price DESC";
+  else if (sort === "rating")    order = "rating_avg DESC NULLS LAST, l.created_at DESC";
   const lim = Math.min(parseInt(limit, 10) || 50, 100);
   const off = parseInt(offset, 10) || 0;
 
   const rows = db.prepare(
-    `SELECT l.*, u.username AS seller_username, u.display_name AS seller_name, u.is_premium AS seller_premium
+    `SELECT l.*,
+            u.username AS seller_username, u.display_name AS seller_name, u.is_premium AS seller_premium,
+            (SELECT AVG(rating) FROM reviews r WHERE r.reviewee_id = u.id) AS rating_avg,
+            (SELECT COUNT(*)   FROM reviews r WHERE r.reviewee_id = u.id) AS rating_count
      FROM listings l
      JOIN users u ON u.id = l.user_id
      WHERE ${where.join(" AND ")}
@@ -41,28 +46,61 @@ router.get("/", premiumGate("browse"), (req, res) => {
   res.json({ listings: attachPhotos(rows) });
 });
 
-// Single listing
+// Single listing (includes seller rating + recent reviews)
 router.get("/:id", premiumGate("browse"), (req, res) => {
   const id = parseInt(req.params.id, 10);
   const row = db.prepare(
-    `SELECT l.*, u.username AS seller_username, u.display_name AS seller_name, u.is_premium AS seller_premium, u.avatar_url AS seller_avatar
+    `SELECT l.*,
+            u.username AS seller_username, u.display_name AS seller_name, u.is_premium AS seller_premium, u.avatar_url AS seller_avatar,
+            (SELECT AVG(rating) FROM reviews r WHERE r.reviewee_id = u.id) AS rating_avg,
+            (SELECT COUNT(*)   FROM reviews r WHERE r.reviewee_id = u.id) AS rating_count
      FROM listings l JOIN users u ON u.id = l.user_id
      WHERE l.id = ?`
   ).get(id);
   if (!row) return res.status(404).json({ error: "not found" });
   attachPhotos([row]);
+  // Include up to 5 recent reviews of the seller
+  row.reviews = db.prepare(
+    `SELECT r.rating, r.comment, r.created_at, u.username AS reviewer_username, u.display_name AS reviewer_name
+     FROM reviews r JOIN users u ON u.id = r.reviewer_id
+     WHERE r.reviewee_id = ?
+     ORDER BY r.created_at DESC LIMIT 5`
+  ).all(row.user_id);
   res.json({ listing: row });
 });
 
 // Create
 router.post("/", authMiddleware(true), premiumGate("post"), (req, res) => {
-  const { title, price, category, condition, description, zip, city, state, lat, lng, photo_urls } = req.body || {};
+  const {
+    title, price, category, condition, description, zip, city, state, lat, lng, photo_urls,
+    subcategory, pricing_model, service_area_radius, availability,
+    years_experience, licensed, insured, bonded
+  } = req.body || {};
   if (!title || price === undefined || !category) return res.status(400).json({ error: "title, price, category required" });
+
+  const isService = category === "services";
+  const availabilityJson = availability && typeof availability === "object" ? JSON.stringify(availability) : (availability || null);
 
   const insert = db.transaction(() => {
     const info = db.prepare(
-      "INSERT INTO listings (user_id, title, price, category, condition, description, zip, city, state, lat, lng) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(req.user.id, title, parseInt(price, 10), category, condition || null, description || null, zip || null, city || null, state || null, lat || null, lng || null);
+      `INSERT INTO listings
+        (user_id, title, price, category, condition, description, zip, city, state, lat, lng,
+         subcategory, pricing_model, service_area_radius, availability,
+         years_experience, licensed, insured, bonded)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?, ?)`
+    ).run(
+      req.user.id, title, parseInt(price, 10), category,
+      condition || null, description || null,
+      zip || null, city || null, state || null, lat || null, lng || null,
+      isService ? (subcategory || null) : null,
+      isService ? (pricing_model || null) : null,
+      isService && service_area_radius != null ? parseInt(service_area_radius, 10) : null,
+      isService ? availabilityJson : null,
+      isService && years_experience != null ? parseInt(years_experience, 10) : null,
+      isService ? (licensed ? 1 : 0) : 0,
+      isService ? (insured  ? 1 : 0) : 0,
+      isService ? (bonded   ? 1 : 0) : 0
+    );
     const listingId = info.lastInsertRowid;
     if (Array.isArray(photo_urls)) {
       const pStmt = db.prepare("INSERT INTO photos (listing_id, url, position) VALUES (?, ?, ?)");

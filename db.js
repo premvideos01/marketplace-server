@@ -86,6 +86,57 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `);
 
+// Migration: add service-specific columns to listings (idempotent — ignore "duplicate column" errors)
+const SERVICE_COLUMNS = [
+  "subcategory TEXT",
+  "pricing_model TEXT",        // 'hourly' | 'flat' | 'quote' | 'package'
+  "service_area_radius INTEGER", // miles
+  "availability TEXT",         // JSON: {days:[],hours:"9-17"}
+  "years_experience INTEGER",
+  "licensed INTEGER NOT NULL DEFAULT 0",
+  "insured INTEGER NOT NULL DEFAULT 0",
+  "bonded INTEGER NOT NULL DEFAULT 0",
+];
+for (const col of SERVICE_COLUMNS) {
+  try { db.exec(`ALTER TABLE listings ADD COLUMN ${col}`); }
+  catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+}
+// Useful index for subcategory browsing
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_listings_subcat ON listings(category, subcategory, created_at DESC)"); } catch {}
+
+// Bookings: requests from buyers to service providers
+db.exec(`
+CREATE TABLE IF NOT EXISTS bookings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+  buyer_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  seller_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  service_date INTEGER,
+  message TEXT,
+  agreed_price INTEGER,
+  status TEXT NOT NULL DEFAULT 'pending', -- pending | accepted | declined | completed | cancelled
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_bookings_seller ON bookings(seller_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bookings_buyer ON bookings(buyer_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_bookings_listing ON bookings(listing_id);
+
+CREATE TABLE IF NOT EXISTS reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  booking_id INTEGER REFERENCES bookings(id) ON DELETE SET NULL,
+  listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+  reviewer_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  reviewee_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  rating INTEGER NOT NULL CHECK(rating >= 1 AND rating <= 5),
+  comment TEXT,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  UNIQUE(booking_id, reviewer_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reviews_reviewee ON reviews(reviewee_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reviews_listing ON reviews(listing_id, created_at DESC);
+`);
+
 // Seed default settings
 const setSetting = db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)");
 setSetting.run("mode", "open"); // open | premium-post | premium-browse | premium-all

@@ -41,8 +41,18 @@ app.use("/api/saved", require("./routes/saved"));
 app.use("/api/uploads", require("./routes/uploads"));
 app.use("/api", messages.router);
 app.use("/api/admin", require("./routes/admin"));
+app.use("/api/bookings", require("./routes/bookings"));
+app.use("/api/reviews", require("./routes/reviews"));
 
 app.get("/health", (_req, res) => res.json({ ok: true, time: Date.now() }));
+
+// Serve the static frontend (after API routes so /api/* still routes to handlers)
+const FRONTEND_DIR = process.env.FRONTEND_DIR || "/Users/computer/.openclaw/workspace/marketplace-preview";
+app.use(express.static(FRONTEND_DIR));
+app.get(/^(?!\/api\/|\/uploads\/|\/health$).*$/, (_req, res) => {
+  res.sendFile(path.join(FRONTEND_DIR, "index.html"));
+});
+
 app.use((err, _req, res, _next) => {
   console.error("ERR:", err.message);
   res.status(err.status || 500).json({ error: err.message });
