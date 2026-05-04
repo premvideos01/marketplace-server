@@ -86,6 +86,10 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `);
 
+// Migration: add token_version to users (used for JWT revocation on logout-all / password change)
+try { db.exec("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0"); }
+catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+
 // Migration: add service-specific columns to listings (idempotent — ignore "duplicate column" errors)
 const SERVICE_COLUMNS = [
   "subcategory TEXT",

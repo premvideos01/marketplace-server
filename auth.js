@@ -15,7 +15,9 @@ async function verifyPassword(pw, hash) {
 }
 
 function signToken(userId) {
-  return jwt.sign({ uid: userId }, JWT_SECRET || "dev-only-secret", { expiresIn: "30d" });
+  const row = db.prepare("SELECT token_version FROM users WHERE id = ?").get(userId);
+  const tv = row?.token_version ?? 0;
+  return jwt.sign({ uid: userId, tv }, JWT_SECRET || "dev-only-secret", { expiresIn: "30d" });
 }
 function verifyToken(token) {
   try { return jwt.verify(token, JWT_SECRET || "dev-only-secret"); }
@@ -23,7 +25,11 @@ function verifyToken(token) {
 }
 
 function getUser(id) {
-  return db.prepare("SELECT id, email, username, display_name, phone, avatar_url, is_admin, is_premium, premium_until, zip, city, state, created_at FROM users WHERE id = ?").get(id);
+  return db.prepare("SELECT id, email, username, display_name, phone, avatar_url, is_admin, is_premium, premium_until, zip, city, state, token_version, created_at FROM users WHERE id = ?").get(id);
+}
+
+function bumpTokenVersion(userId) {
+  db.prepare("UPDATE users SET token_version = COALESCE(token_version,0) + 1 WHERE id = ?").run(userId);
 }
 
 function authMiddleware(required = true) {
@@ -33,7 +39,11 @@ function authMiddleware(required = true) {
     if (token) {
       const payload = verifyToken(token);
       if (payload) {
-        req.user = getUser(payload.uid);
+        const u = getUser(payload.uid);
+        // Reject stale token if user.token_version was bumped (logout-all / password change)
+        if (u && (u.token_version ?? 0) === (payload.tv ?? 0)) {
+          req.user = u;
+        }
       }
     }
     if (required && !req.user) return res.status(401).json({ error: "auth required" });
@@ -70,5 +80,5 @@ function premiumGate(action) {
 
 module.exports = {
   hashPassword, verifyPassword, signToken, verifyToken,
-  getUser, authMiddleware, adminOnly, premiumGate
+  getUser, authMiddleware, adminOnly, premiumGate, bumpTokenVersion
 };

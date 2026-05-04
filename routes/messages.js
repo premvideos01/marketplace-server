@@ -1,4 +1,5 @@
 const express = require("express");
+const rateLimit = require("express-rate-limit");
 const { db } = require("../db");
 const { authMiddleware, premiumGate } = require("../auth");
 
@@ -7,6 +8,35 @@ const router = express.Router();
 // Hooked from server.js to broadcast over WebSocket
 let broadcast = () => {};
 function bindBroadcast(fn) { broadcast = fn; }
+
+// IP-burst limiter (anti-bot)
+const messageBurstLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "too many messages too fast, slow down" }
+});
+
+// Per-user daily caps
+const DAILY_MESSAGE_LIMIT = 200;
+const DAILY_NEW_CONV_LIMIT = 30;
+function checkDailyMessageQuota(req, res, next) {
+  const since = Math.floor(Date.now() / 1000) - 86400;
+  const sent = db.prepare("SELECT COUNT(*) c FROM messages WHERE sender_id = ? AND created_at > ?").get(req.user.id, since).c;
+  if (sent >= DAILY_MESSAGE_LIMIT) {
+    return res.status(429).json({ error: `daily message limit reached (${DAILY_MESSAGE_LIMIT}/24h)` });
+  }
+  next();
+}
+function checkDailyConversationQuota(req, res, next) {
+  const since = Math.floor(Date.now() / 1000) - 86400;
+  const created = db.prepare("SELECT COUNT(*) c FROM conversations WHERE buyer_id = ? AND created_at > ?").get(req.user.id, since).c;
+  if (created >= DAILY_NEW_CONV_LIMIT) {
+    return res.status(429).json({ error: `daily new-conversation limit reached (${DAILY_NEW_CONV_LIMIT}/24h)` });
+  }
+  next();
+}
 
 // List my conversations with last message
 router.get("/conversations", authMiddleware(true), (req, res) => {
@@ -59,7 +89,7 @@ router.get("/conversations/:id/messages", authMiddleware(true), (req, res) => {
 });
 
 // Start (or reuse) a conversation about a listing + send first message
-router.post("/conversations", authMiddleware(true), premiumGate("message"), (req, res) => {
+router.post("/conversations", messageBurstLimiter, authMiddleware(true), premiumGate("message"), checkDailyMessageQuota, checkDailyConversationQuota, (req, res) => {
   const { listing_id, body } = req.body || {};
   if (!listing_id || !body) return res.status(400).json({ error: "listing_id and body required" });
   const listing = db.prepare("SELECT id, user_id FROM listings WHERE id = ?").get(parseInt(listing_id, 10));
@@ -90,7 +120,7 @@ router.post("/conversations", authMiddleware(true), premiumGate("message"), (req
 });
 
 // Send message to existing conversation
-router.post("/messages", authMiddleware(true), premiumGate("message"), (req, res) => {
+router.post("/messages", messageBurstLimiter, authMiddleware(true), premiumGate("message"), checkDailyMessageQuota, (req, res) => {
   const { conversation_id, body } = req.body || {};
   if (!conversation_id || !body) return res.status(400).json({ error: "conversation_id and body required" });
   const conv = db.prepare("SELECT * FROM conversations WHERE id = ?").get(parseInt(conversation_id, 10));

@@ -52,7 +52,30 @@ app.use("/api/admin", require("./routes/admin"));
 app.use("/api/bookings", require("./routes/bookings"));
 app.use("/api/reviews", require("./routes/reviews"));
 
-app.get("/health", (_req, res) => res.json({ ok: true, time: Date.now() }));
+// Health check verifies DB writability — INSERT and DELETE a row in a small probe table.
+const { db: probeDb } = require("./db");
+try { probeDb.exec("CREATE TABLE IF NOT EXISTS health_probe (ts INTEGER NOT NULL)"); } catch {}
+app.get("/health", (_req, res) => {
+  try {
+    probeDb.prepare("INSERT INTO health_probe (ts) VALUES (?)").run(Date.now());
+    probeDb.prepare("DELETE FROM health_probe WHERE ts < ?").run(Date.now() - 60000);
+    res.json({ ok: true, time: Date.now() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Daily background tasks: auto-archive listings that have been active >60d, prune health_probe
+function runDailyMaintenance() {
+  try {
+    const cutoff = Math.floor(Date.now() / 1000) - 60 * 86400;
+    const r = probeDb.prepare("UPDATE listings SET status = 'archived' WHERE status = 'active' AND created_at < ?").run(cutoff);
+    if (r.changes > 0) console.log(`[maintenance] auto-archived ${r.changes} stale listings (>60d active)`);
+    probeDb.prepare("DELETE FROM health_probe WHERE ts < ?").run(Date.now() - 86400000);
+  } catch (e) { console.error("[maintenance] error:", e.message); }
+}
+setInterval(runDailyMaintenance, 24 * 3600 * 1000);
+setTimeout(runDailyMaintenance, 60 * 1000);  // run once a minute after startup too
 
 // Serve the static frontend (after API routes so /api/* still routes to handlers)
 const FRONTEND_DIR = process.env.FRONTEND_DIR || "/Users/computer/.openclaw/workspace/marketplace-preview";

@@ -1,7 +1,7 @@
 const express = require("express");
 const rateLimit = require("express-rate-limit");
 const { db } = require("../db");
-const { hashPassword, verifyPassword, signToken, getUser, authMiddleware } = require("../auth");
+const { hashPassword, verifyPassword, signToken, getUser, authMiddleware, bumpTokenVersion } = require("../auth");
 
 const router = express.Router();
 
@@ -62,6 +62,29 @@ router.post("/login", loginLimiter, async (req, res) => {
 
 router.get("/me", authMiddleware(true), (req, res) => {
   res.json({ user: req.user });
+});
+
+// Invalidate every existing token for this user, including the one used to call this endpoint.
+router.post("/logout-all", authMiddleware(true), (req, res) => {
+  bumpTokenVersion(req.user.id);
+  res.json({ ok: true });
+});
+
+// Change password — requires current password, bumps token_version (other sessions are kicked).
+router.post("/change-password", authMiddleware(true), async (req, res) => {
+  const { current_password, new_password } = req.body || {};
+  if (!current_password || !new_password) return res.status(400).json({ error: "current_password and new_password required" });
+  if (new_password.length < 8) return res.status(400).json({ error: "new password must be at least 8 characters" });
+  const row = db.prepare("SELECT password_hash FROM users WHERE id = ?").get(req.user.id);
+  if (!row) return res.status(404).json({ error: "user not found" });
+  const ok = await verifyPassword(current_password, row.password_hash);
+  if (!ok) return res.status(401).json({ error: "current password incorrect" });
+  const newHash = await hashPassword(new_password);
+  db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(newHash, req.user.id);
+  bumpTokenVersion(req.user.id);
+  // Issue a fresh token so the caller stays signed in
+  const token = signToken(req.user.id);
+  res.json({ token, user: getUser(req.user.id) });
 });
 
 module.exports = router;
