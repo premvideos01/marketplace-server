@@ -118,6 +118,8 @@ router.post("/", authMiddleware(true), premiumGate("post"), (req, res) => {
   res.json({ listing: row });
 });
 
+const VALID_STATUSES = new Set(["active", "sold", "archived", "draft"]);
+
 // Update own
 router.put("/:id", authMiddleware(true), (req, res) => {
   const id = parseInt(req.params.id, 10);
@@ -126,6 +128,9 @@ router.put("/:id", authMiddleware(true), (req, res) => {
   if (owned.user_id !== req.user.id && !req.user.is_admin) return res.status(403).json({ error: "not your listing" });
 
   const { title, price, category, condition, description, zip, city, state, status, photo_urls } = req.body || {};
+  if (status !== undefined && status !== null && !VALID_STATUSES.has(status)) {
+    return res.status(400).json({ error: `status must be one of: ${[...VALID_STATUSES].join(", ")}` });
+  }
   db.prepare(
     `UPDATE listings SET
        title = COALESCE(?, title),

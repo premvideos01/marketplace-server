@@ -1,4 +1,5 @@
 const express = require("express");
+const rateLimit = require("express-rate-limit");
 const { db } = require("../db");
 const { hashPassword, verifyPassword, signToken, getUser, authMiddleware } = require("../auth");
 
@@ -6,7 +7,23 @@ const router = express.Router();
 
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "").toLowerCase();
 
-router.post("/signup", async (req, res) => {
+// Rate limits: brute-force and signup-spam mitigation
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "too many login attempts, try again in 15 minutes" }
+});
+const signupLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "too many signups from this IP, try again later" }
+});
+
+router.post("/signup", signupLimiter, async (req, res) => {
   const { email, password, username, display_name } = req.body || {};
   if (!email || !password || !username) return res.status(400).json({ error: "email, password, username required" });
   if (password.length < 8) return res.status(400).json({ error: "password must be at least 8 characters" });
@@ -31,7 +48,7 @@ router.post("/signup", async (req, res) => {
   }
 });
 
-router.post("/login", async (req, res) => {
+router.post("/login", loginLimiter, async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: "email and password required" });
   const row = db.prepare("SELECT id, password_hash FROM users WHERE email = ?").get(email);

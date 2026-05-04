@@ -13,16 +13,24 @@ try {
 
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 const path = require("path");
 const http = require("http");
 const { WebSocketServer } = require("ws");
 const { verifyToken, getUser } = require("./auth");
 
 const app = express();
+app.set("trust proxy", 1);  // honor X-Forwarded-For from Cloudflare so rate-limit sees real IPs
 const PORT = parseInt(process.env.PORT || "3010", 10);
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, "uploads");
-const allowedOrigins = (process.env.CORS_ORIGINS || "*").split(",").map(s => s.trim());
+const allowedOrigins = (process.env.CORS_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean);
+if (allowedOrigins.length === 0 && process.env.NODE_ENV === "production") {
+  console.error("FATAL: CORS_ORIGINS must be set in production (refusing default '*')");
+  process.exit(1);
+}
 
+// Security headers — keep CSP off because we serve a frontend with inline event handlers; revisit later
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(express.json({ limit: "1mb" }));
 app.use(cors({
   origin: (origin, cb) => {

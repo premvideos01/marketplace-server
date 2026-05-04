@@ -37,6 +37,10 @@ router.get("/users", (req, res) => {
 router.put("/users/:id", (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { is_admin, is_premium, premium_until } = req.body || {};
+  // Guard: admin cannot demote themselves (would risk locking everyone out if they're the only admin)
+  if (id === req.user.id && is_admin !== undefined && !is_admin) {
+    return res.status(400).json({ error: "cannot demote yourself; ask another admin to do it" });
+  }
   db.prepare(
     "UPDATE users SET is_admin = COALESCE(?, is_admin), is_premium = COALESCE(?, is_premium), premium_until = COALESCE(?, premium_until) WHERE id = ?"
   ).run(
@@ -50,6 +54,10 @@ router.put("/users/:id", (req, res) => {
 
 router.delete("/users/:id", (req, res) => {
   const id = parseInt(req.params.id, 10);
+  // Guard: admin cannot delete themselves (FK cascade would wipe listings + cause self-lockout)
+  if (id === req.user.id) {
+    return res.status(400).json({ error: "cannot delete yourself; ask another admin" });
+  }
   db.prepare("DELETE FROM users WHERE id = ?").run(id);
   res.json({ ok: true });
 });
