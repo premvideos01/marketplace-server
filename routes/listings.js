@@ -17,9 +17,12 @@ function attachPhotos(listings) {
 
 // Browse / search
 router.get("/", premiumGate("browse"), (req, res) => {
-  const { category, subcategory, q, max_price, sort = "newest", limit = 50, offset = 0 } = req.query;
+  const { category, subcategory, section, q, max_price, sort = "newest", limit = 50, offset = 0 } = req.query;
   const where = ["l.status = 'active'"];
   const params = [];
+  // Section is a coarse filter: sale = everything except services; services = only services
+  if (section === "sale")          { where.push("l.category != 'services'"); }
+  else if (section === "services") { where.push("l.category  = 'services'"); }
   if (category && category !== "all") { where.push("l.category = ?"); params.push(category); }
   if (subcategory)                    { where.push("l.subcategory = ?"); params.push(subcategory); }
   if (q) { where.push("(l.title LIKE ? OR l.description LIKE ?)"); params.push(`%${q}%`, `%${q}%`); }
